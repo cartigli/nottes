@@ -23,7 +23,7 @@
     },
     "files": [
       "main.js",
-      "index.html",
+      "src/**/*",
       "package.json"
     ],
     "win": {

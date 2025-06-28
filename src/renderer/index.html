@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Notes</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <div class="sync-status" id="syncStatus">Ready</div>
+            <div class="create-buttons">
+                <button class="btn" onclick="createFolder()">New Folder</button>
+                <button class="btn" onclick="createFile()">New File</button>
+            </div>
+        </div>
+        <div class="file-tree" id="fileTree">
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="editor-header">
+            <h3 id="currentFileName">Select a file to edit</h3>
+        </div>
+        <div class="editor">
+            <div class="empty-state" id="emptyState">
+                Create a new file or select an existing one to start editing
+            </div>
+            <div class="editor-container" id="editorContainer" style="display: none;">
+                <div class="formatted-preview" id="formattedPreview"></div>
+                <textarea id="textEditor" placeholder="Start typing... Use $title$, $subtitle$, *italic*, **bold**, _underline_, [monospace]"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load JavaScript modules -->
+    <script src="formatter.js"></script>
+    <script src="renderer.js"></script>
+</body>
+</html>
