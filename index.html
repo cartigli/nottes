@@ -32,6 +32,26 @@
             background: #fafafa;
         }
 
+        .sync-status {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 10px;
+            padding: 4px 8px;
+            background: #f0f8ff;
+            border-radius: 3px;
+            text-align: center;
+        }
+
+        .sync-status.saving {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .sync-status.saved {
+            background: #d4edda;
+            color: #155724;
+        }
+
         .create-buttons {
             display: flex;
             gap: 10px;
@@ -179,6 +199,7 @@
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
+            <div class="sync-status" id="syncStatus">Ready</div>
             <div class="create-buttons">
                 <button class="btn" onclick="createFolder()">📁 New Folder</button>
                 <button class="btn" onclick="createFile()">📄 New File</button>
@@ -208,16 +229,26 @@
         let currentFileId = null;
         let draggedItem = null;
         let contextMenu = null;
+        let autoSaveTimeout = null;
+        let isElectron = typeof require !== 'undefined';
 
         // Initialize the app
         function init() {
+            loadFromLocalStorage();
             renderFileTree();
             setupEventListeners();
         }
 
         function setupEventListeners() {
             const editor = document.getElementById('textEditor');
-            editor.addEventListener('input', saveCurrentFile);
+            editor.addEventListener('input', () => {
+                updateSyncStatus('saving');
+                if (autoSaveTimeout) clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = setTimeout(() => {
+                    saveCurrentFile();
+                    autoSaveToDisk();
+                }, 1000); // Auto-save after 1 second of inactivity
+            });
             
             document.addEventListener('click', hideContextMenu);
             document.addEventListener('contextmenu', (e) => {
@@ -225,6 +256,12 @@
                     hideContextMenu();
                 }
             });
+
+            // Initialize notes directory in Electron
+            if (isElectron) {
+                const { ipcRenderer } = require('electron');
+                ipcRenderer.invoke('ensure-notes-directory');
+            }
         }
 
         function createFolder() {
@@ -383,6 +420,70 @@
                 const editor = document.getElementById('textEditor');
                 fileSystem.files[currentFileId].content = editor.value;
                 saveToLocalStorage();
+                updateSyncStatus('saved');
+            }
+        }
+
+        // Auto-save to disk functionality
+        async function autoSaveToDisk() {
+            if (!isElectron || !currentFileId) return;
+            
+            try {
+                const { ipcRenderer } = require('electron');
+                const file = fileSystem.files[currentFileId];
+                const folderName = file.folderId ? fileSystem.folders[file.folderId].name : '';
+                
+                await ipcRenderer.invoke('save-note-to-disk', file.name, file.content, folderName);
+                updateSyncStatus('saved');
+            } catch (error) {
+                console.error('Auto-save to disk failed:', error);
+                updateSyncStatus('error');
+            }
+        }
+
+        // Export individual note
+        async function exportNote(fileId) {
+            if (!isElectron) {
+                alert('Export feature requires desktop app');
+                return;
+            }
+
+            try {
+                const { ipcRenderer } = require('electron');
+                const file = fileSystem.files[fileId];
+                const result = await ipcRenderer.invoke('export-note', file.name, file.content);
+                
+                if (result.success && !result.canceled) {
+                    alert(`Note exported successfully to: ${result.path}`);
+                }
+            } catch (error) {
+                alert('Export failed: ' + error.message);
+            }
+            hideContextMenu();
+        }
+
+        // Update sync status indicator
+        function updateSyncStatus(status) {
+            const syncStatus = document.getElementById('syncStatus');
+            syncStatus.className = 'sync-status ' + status;
+            
+            switch (status) {
+                case 'saving':
+                    syncStatus.textContent = 'Saving...';
+                    break;
+                case 'saved':
+                    syncStatus.textContent = 'All changes saved';
+                    setTimeout(() => {
+                        syncStatus.className = 'sync-status';
+                        syncStatus.textContent = 'Ready';
+                    }, 2000);
+                    break;
+                case 'error':
+                    syncStatus.textContent = 'Save error';
+                    syncStatus.className = 'sync-status saving';
+                    break;
+                default:
+                    syncStatus.textContent = 'Ready';
             }
         }
 
@@ -432,6 +533,7 @@
             
             menu.innerHTML = `
                 <div class="context-menu-item" onclick="editName('${id}', '${type}')">Rename</div>
+                ${type === 'file' ? `<div class="context-menu-item" onclick="exportNote('${id}')">Export as .txt</div>` : ''}
                 <div class="context-menu-item" onclick="deleteItem('${id}', '${type}')">Delete</div>
             `;
             
@@ -488,7 +590,91 @@
             // Handle menu events
             ipcRenderer.on('menu-new-file', () => createFile());
             ipcRenderer.on('menu-new-folder', () => createFolder());
-            ipcRenderer.on('menu-save', () => saveCurrentFile());
+            ipcRenderer.on('menu-save', () => {
+                saveCurrentFile();
+                autoSaveToDisk();
+            });
+            
+            // Export current note
+            ipcRenderer.on('menu-export-current', async () => {
+                if (!currentFileId) {
+                    alert('No file is currently open');
+                    return;
+                }
+                await exportNote(currentFileId);
+            });
+            
+            // Export all notes to folder
+            ipcRenderer.on('menu-export-all', async () => {
+                try {
+                    updateSyncStatus('saving');
+                    const result = await ipcRenderer.invoke('export-all-notes', fileSystem);
+                    
+                    if (result.success && !result.canceled) {
+                        alert(`Successfully exported ${result.count} notes to: ${result.path}`);
+                        updateSyncStatus('saved');
+                    } else if (!result.canceled) {
+                        alert('Export failed: ' + result.error);
+                        updateSyncStatus('error');
+                    }
+                } catch (error) {
+                    alert('Export failed: ' + error.message);
+                    updateSyncStatus('error');
+                }
+            });
+
+            // Import notes from disk
+            ipcRenderer.on('menu-import-from-disk', async () => {
+                try {
+                    const result = await ipcRenderer.invoke('import-from-disk');
+                    
+                    if (result.success && !result.canceled) {
+                        if (result.files.length === 0) {
+                            alert('No .txt files found in the selected folder');
+                            return;
+                        }
+
+                        const confirmMessage = `Found ${result.files.length} text files. This will add them to your current notes. Continue?`;
+                        if (!confirm(confirmMessage)) return;
+
+                        // Import files into the app
+                        for (const importedFile of result.files) {
+                            const fileId = 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                            
+                            // Create folder if needed
+                            let folderId = null;
+                            if (importedFile.folder) {
+                                const folderName = importedFile.folder;
+                                const existingFolder = Object.values(fileSystem.folders).find(f => f.name === folderName);
+                                
+                                if (existingFolder) {
+                                    folderId = existingFolder.id;
+                                } else {
+                                    folderId = 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                                    fileSystem.folders[folderId] = {
+                                        id: folderId,
+                                        name: folderName,
+                                        files: []
+                                    };
+                                }
+                            }
+
+                            fileSystem.files[fileId] = {
+                                id: fileId,
+                                name: importedFile.name,
+                                content: importedFile.content,
+                                folderId: folderId
+                            };
+                        }
+
+                        renderFileTree();
+                        saveToLocalStorage();
+                        alert(`Successfully imported ${result.files.length} notes!`);
+                    }
+                } catch (error) {
+                    alert('Import failed: ' + error.message);
+                }
+            });
             
             ipcRenderer.on('menu-export', async (event, filePath) => {
                 try {
